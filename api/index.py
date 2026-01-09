@@ -4,30 +4,39 @@ import re
 import requests
 from http.server import BaseHTTPRequestHandler
 
+# ---------------- CONFIG ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 DEST_CHAT_ID = -1002822227530
-STORAGE_FILE = "store.json"
+STORAGE_FILE = "/tmp/store.json"   # ✅ Vercel safe temp storage
 
-# ---------- storage ----------
+# ---------------- STORAGE ----------------
 if not os.path.exists(STORAGE_FILE):
     with open(STORAGE_FILE, "w") as f:
         json.dump([], f)
 
 def load_store():
-    with open(STORAGE_FILE, "r") as f:
-        return json.load(f)
+    try:
+        with open(STORAGE_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return []
 
 def save_store(data):
     with open(STORAGE_FILE, "w") as f:
         json.dump(data, f)
 
-# ---------- helpers ----------
+# ---------------- HELPERS ----------------
 def send_message(chat_id, text):
     requests.post(
         f"{API_URL}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown"
+        },
+        timeout=10
     )
 
 def cut_at_emoji(text):
@@ -38,38 +47,40 @@ def cut_at_emoji(text):
 
 def extract_bot_number(username):
     clean = username.replace("_", "")
-    m = re.search(r'(\d{1,2})Bot$', clean, re.IGNORECASE)
-    return str(int(m.group(1))) if m else None
+    m = re.search(r"(\d{1,2})Bot$", clean, re.I)
+    return int(m.group(1)) if m else None
 
-# ---------- handler ----------
+# ---------------- HANDLER ----------------
 class handler(BaseHTTPRequestHandler):
+
     def do_POST(self):
         length = int(self.headers.get("content-length", 0))
         body = json.loads(self.rfile.read(length))
 
         msg = body.get("message")
         if not msg:
-            self.ok()
+            self.respond()
             return
 
         chat_id = msg["chat"]["id"]
         text = msg.get("text") or msg.get("caption") or ""
 
-        # ---------- FORWARDED MESSAGE ----------
+        # ---------- FORWARDED CHANNEL MESSAGE ----------
         if msg.get("forward_from_chat", {}).get("type") == "channel":
-            bots = re.findall(r'@[\w_]+', text)
+
+            bots = re.findall(r"@[\w_]+", text)
             numbers = [extract_bot_number(b) for b in bots if extract_bot_number(b)]
 
-            m = re.search(r'CHANNEL NAME\s*[-:]?\s*(.+)', text, re.I)
+            m = re.search(r"CHANNEL NAME\s*[-:]?\s*(.+)", text, re.I)
             if not m or not numbers:
-                self.ok()
+                self.respond()
                 return
 
             base = cut_at_emoji(m.group(1))
-            num = int(numbers[0])
+            num = numbers[0]
 
             if not (1 <= num <= 100):
-                self.ok()
+                self.respond()
                 return
 
             store = load_store()
@@ -87,12 +98,10 @@ class handler(BaseHTTPRequestHandler):
             if not store:
                 send_message(chat_id, "📦 Empty.")
             else:
-                send_message(chat_id, "\n".join(f"{x['name']} {x['num']}" for x in store))
-
-        # ---------- .reset ----------
-        elif text == ".reset" and chat_id == DEST_CHAT_ID:
-            save_store([])
-            send_message(chat_id, "✅ All data reset.")
+                send_message(
+                    chat_id,
+                    "\n".join(f"{x['name']} {x['num']}" for x in store)
+                )
 
         # ---------- .allx ----------
         elif text == ".allx" and chat_id == DEST_CHAT_ID:
@@ -115,12 +124,17 @@ class handler(BaseHTTPRequestHandler):
                             out.append("")
                 send_message(chat_id, "\n".join(out))
 
-        self.ok()
+        # ---------- .reset ----------
+        elif text == ".reset" and chat_id == DEST_CHAT_ID:
+            save_store([])
+            send_message(chat_id, "✅ All data reset.")
 
-    def ok(self):
+        self.respond()
+
+    def respond(self):
         self.send_response(200)
         self.end_headers()
 
     def do_GET(self):
-        self.ok()
+        self.respond()
         self.wfile.write(b"Bot running")
